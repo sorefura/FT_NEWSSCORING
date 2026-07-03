@@ -1,0 +1,48 @@
+# config.yaml — RSSフィード、対象ティッカー、コスト前提
+# SPEC.md §3, §5, §6.2, §7 参照
+
+pipeline_version: "1.0.0"
+
+news:
+  # SPEC §4.1: 日経・ロイター・Bloombergの公開RSSから市況/マクロカテゴリ
+  feeds:
+    - name: reuters_jp
+      url: "https://jp.reuters.com/arc/outboundfeeds/newsroom/category/business/?outputType=xml"
+    - name: nikkei_markets
+      url: "https://www.nikkei.com/rss/index.rdf"
+  # SPEC §7: 日次採点上限。超過分は繰り越さず欠測として記録
+  daily_scoring_limit: 50
+  # SPEC §4.2/§4.4 制約B: 採点対象は取得時点から48時間以内に公開されたニュースのみ
+  max_news_age_hours: 48
+
+scoring:
+  # SPEC §4.3: 採点は安価な分類モデルに固定。Fable/Opusは禁止
+  model: "claude-haiku-4-5-20251001"
+  allowed_models:
+    - "claude-haiku-4-5-20251001"
+  temperature: 0
+  repeats: 3
+  prompt_version: "v1"
+  prompt_path: "prompts/scorer_v1.md"
+  # SPEC §4.4: 再現性検査(校正)の不合格基準
+  calibration:
+    range_threshold: 2
+    failure_rate_threshold: 0.20
+    lookback_months: 3
+
+prices:
+  # SPEC §5: 初期対象は日経225のみ。フェーズ2で個別銘柄を追加
+  symbols:
+    - symbol: "^N225"
+      kind: "index"
+  horizons_business_days: [1, 5, 20]
+
+costs:
+  # SPEC §6.2: 往復コスト(初期値は保守的に)
+  round_trip_cost_index: 0.002
+  round_trip_cost_single_stock: 0.005
+
+evaluation:
+  bootstrap_resamples: 10000
+  # 判定保留とする最小サンプル数の目安(§6.3)
+  min_n_for_judgement: 30

@@ -1,0 +1,6 @@
+anthropic
+feedparser
+yfinance
+pandas
+pyarrow
+pyyaml

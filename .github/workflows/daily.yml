@@ -1,0 +1,83 @@
+name: daily
+
+on:
+  schedule:
+    # JST 07:00 月〜金 = UTC 22:00 日〜木 (SPEC §3)
+    - cron: "0 22 * * 0,1,2,3,4"
+    # JST 16:30 月〜金 = UTC 07:30 月〜金 (SPEC §3)
+    - cron: "30 7 * * 1-5"
+    # 月次評価(手動 or 月次, SPEC §3): 毎月1日 UTC 00:00 に実行
+    - cron: "0 0 1 * *"
+  workflow_dispatch:
+    inputs:
+      task:
+        description: "手動実行するタスク"
+        type: choice
+        options: [collect, evaluate]
+        default: collect
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ftns-daily-pipeline
+  cancel-in-progress: false
+
+jobs:
+  collect:
+    # fetch_news.py は score.py が内部でライブラリとして呼び出す(src/score.py 参照)。
+    # このジョブは日次収集用の2つのcronのみで起動する(月次evaluate用cronでは起動しない)。
+    if: >-
+      (github.event_name == 'schedule' && github.event.schedule != '0 0 1 * *') ||
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.task == 'collect')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - run: pip install -r requirements.txt
+
+      - name: score.py (内部で fetch_news.py の取得処理を呼び出す)
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: python src/score.py
+
+      - name: fetch_prices.py
+        run: python src/fetch_prices.py
+
+      - name: commit data (append-only)
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/scores.jsonl data/prices.parquet
+          git diff --cached --quiet || git commit -m "chore: update scores/prices [skip ci]"
+          git push
+
+  evaluate:
+    # 月次評価は手動 or 月次(SPEC §3)。日次収集の失敗有無に関わらず独立して実行する。
+    if: >-
+      (github.event_name == 'schedule' && github.event.schedule == '0 0 1 * *') ||
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.task == 'evaluate')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - run: pip install -r requirements.txt
+
+      - name: evaluate.py
+        run: python src/evaluate.py
+
+      - name: commit report
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/reports/
+          git diff --cached --quiet || git commit -m "chore: monthly evaluation report [skip ci]"
+          git push
