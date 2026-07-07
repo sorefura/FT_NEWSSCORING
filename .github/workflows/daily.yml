@@ -40,7 +40,7 @@ jobs:
 
       - run: pip install -r requirements.txt
 
-      - name: run tests (SPEC §10: ガードが壊れた状態で先に進まない)
+      - name: "run tests (SPEC §10: ガードが壊れた状態で先に進まない)"
         run: python -m pytest tests/ -q
 
       - name: score.py (内部で fetch_news.py の取得処理を呼び出す)
@@ -74,7 +74,7 @@ jobs:
 
       - run: pip install -r requirements.txt
 
-      - name: run tests (SPEC §10: ガードが壊れた状態で先に進まない)
+      - name: "run tests (SPEC §10: ガードが壊れた状態で先に進まない)"
         run: python -m pytest tests/ -q
 
       - name: evaluate.py
