@@ -206,3 +206,17 @@ def test_hash_prompt_file_matches_manual_sha256(tmp_path):
     p.write_text("prompt body", encoding="utf-8")
     expected = hashlib.sha256(p.read_bytes()).hexdigest()
     assert common.hash_prompt_file(p) == expected
+
+
+# --- GitHub Actions workflow YAMLの構文ガード(INSTRUCTION_002 タスク1) ------------------
+
+
+def test_github_workflow_yaml_is_valid():
+    """ワークフローYAMLが不正だとCI自体が起動せず自己検出できないため、ローカルテストで守る(INSTRUCTION_002 タスク1)。"""
+    import yaml
+
+    workflows = list((common.REPO_ROOT / ".github" / "workflows").glob("*.yml"))
+    assert workflows, "workflowファイルが見つからない"
+    for p in workflows:
+        with open(p, encoding="utf-8") as f:
+            yaml.safe_load(f)

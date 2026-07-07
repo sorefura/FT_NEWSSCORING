@@ -7,3 +7,7 @@ venv/
 *.egg-info/
 .pytest_cache/
 refs/*
+# データはdataブランチに移行済み(INSTRUCTION_002 タスク3-b/4)。
+# ./data はCI上で別ブランチをチェックアウトするネストした作業ツリーになるため、
+# mainのgit addがgitlinkを誤コミットしないよう無視する。
+data/

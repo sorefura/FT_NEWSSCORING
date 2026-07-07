@@ -7,17 +7,23 @@ SPEC §0.3(記録は追記専用)に倣い、既に保存済みの (date, symbol
 from __future__ import annotations
 
 import argparse
-from datetime import date
+import sys
+from datetime import datetime, time
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
 import yfinance as yf
 
-from common import PRICES_PATH, load_config
+from common import JST, PRICES_PATH, load_config
 
 COLUMNS = ["date", "symbol", "open", "close", "adj_close"]
 DEFAULT_INITIAL_PERIOD = "10y"
+
+# SPEC §5注記: 東証現物は15:30引け。16:00 JST を境界にすれば、大引け後の定時実行
+# (16:30 JST)は当日確定値を取得でき、朝の実行(07:00 JST)や場中の手動実行は
+# 未確定の当日行を書かない(INSTRUCTION_002 タスク2-a)。
+INTRADAY_CUTOFF_JST = time(16, 0)
 
 
 def _load_existing(path: Path = PRICES_PATH) -> pd.DataFrame:
@@ -51,12 +57,23 @@ def fetch_symbol_history(symbol: str, *, start: str | None = None, period: str |
     return out[COLUMNS]
 
 
-def update_prices(config: dict[str, Any], *, path: Path = PRICES_PATH) -> dict[str, int]:
-    """新規日付の行のみを追加する。既存行の値を上書きするコードパスは持たない。"""
+def update_prices(
+    config: dict[str, Any], *, path: Path = PRICES_PATH, now: datetime | None = None
+) -> dict[str, int]:
+    """新規日付の行のみを追加する。既存行の値を上書きするコードパスは持たない。
+
+    16:00 JSTより前の実行では、東証現物の引け(15:30)未到来につき未確定の
+    当日行を保存しない(INSTRUCTION_002 タスク2-a)。
+    """
+    now_jst = (now or datetime.now(JST)).astimezone(JST)
+    today_str = now_jst.date().isoformat()
+    is_after_close = now_jst.time() >= INTRADAY_CUTOFF_JST
+
     existing = _load_existing(path)
     existing_keys = set(zip(existing["date"], existing["symbol"])) if not existing.empty else set()
 
     new_rows: list[pd.Series] = []
+    skipped_intraday = 0
     for symbol_cfg in config["prices"]["symbols"]:
         symbol = symbol_cfg["symbol"]
 
@@ -73,6 +90,9 @@ def update_prices(config: dict[str, Any], *, path: Path = PRICES_PATH) -> dict[s
             fetched = fetch_symbol_history(symbol, period=DEFAULT_INITIAL_PERIOD)
 
         for _, row in fetched.iterrows():
+            if row["date"] == today_str and not is_after_close:
+                skipped_intraday += 1
+                continue
             key = (row["date"], row["symbol"])
             if key not in existing_keys:
                 new_rows.append(row)
@@ -85,7 +105,7 @@ def update_prices(config: dict[str, Any], *, path: Path = PRICES_PATH) -> dict[s
         path.parent.mkdir(parents=True, exist_ok=True)
         combined.to_parquet(path, index=False)
 
-    return {"added": added, "total": len(existing) + added}
+    return {"added": added, "total": len(existing) + added, "skipped_intraday": skipped_intraday}
 
 
 def main() -> None:
@@ -93,6 +113,16 @@ def main() -> None:
     config = load_config()
     summary = update_prices(config)
     print(summary)
+
+    # ブートストラップ失敗検知(INSTRUCTION_002 タスク2-b)。
+    # added==0 自体は土日祝で正常なため異常条件にしない。ファイルが存在しない、
+    # または総行数が0の場合のみサイレント失敗にしない。
+    if not PRICES_PATH.exists() or summary["total"] == 0:
+        print(
+            "[fetch_prices.py] prices.parquet が存在しないか総行数0です。取得処理を確認してください。",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
 
 if __name__ == "__main__":

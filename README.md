@@ -23,21 +23,22 @@ pip install -r requirements.txt
 
 ### 2. APIキーの設定(ローカル実行)
 
-`.env.example` を `.env` にコピーし、Anthropic の API キーを設定する。
-`.env` は `.gitignore` 対象であり、絶対にコミットしないこと。
-
-```bash
-cp .env.example .env
-# .env を編集して ANTHROPIC_API_KEY=sk-... を設定
-```
-
-ローカル実行時は、シェルで環境変数として読み込んでから実行する。例(PowerShell):
+**コードは dotenv を読み込まない。** `.env` ファイルを置くだけでは `ANTHROPIC_API_KEY`
+は渡らない。シェルの環境変数として直接セットしてから実行すること。
 
 ```powershell
-Get-Content .env | ForEach-Object {
-    if ($_ -match '^([^=]+)=(.*)$') { Set-Item "env:$($matches[1])" $matches[2] }
-}
+# PowerShell
+$env:ANTHROPIC_API_KEY = "sk-ant-..."
 ```
+
+```bash
+# bash
+export ANTHROPIC_API_KEY=sk-ant-...
+```
+
+`.env.example` は変数名を覚えておくためのローカル用メモに過ぎない(コードからは
+読み込まれない)。コピーして自分用のメモとして使うのは自由だが、`.env` を
+置くだけで動作すると誤解しないこと。`.env` はいずれにせよ `.gitignore` 対象。
 
 ### 3. GitHub Secrets の設定(Actions実行)
 
@@ -66,15 +67,35 @@ python src/fetch_news.py     # (単体デバッグ用)未採点ニュース候�
 `.github/workflows/daily.yml` が以下を自動実行する(SPEC §3, §10-4)。
 
 - 毎営業日 JST 07:00 / 16:30: `score.py` → `fetch_prices.py` を実行し、結果を
-  `data/scores.jsonl` / `data/prices.parquet` に追記コミットする
-- 毎月1日: `evaluate.py` を実行し、`data/reports/YYYY-MM.md` をコミットする
+  `data` ブランチの `scores.jsonl` / `prices.parquet` に追記コミットする
+- 毎月1日: `evaluate.py` を実行し、`data` ブランチの `reports/YYYY-MM.md` をコミットする
 - `workflow_dispatch` から `collect` / `evaluate` を手動実行することも可能
+
+コードとデータをブランチで分離している(INSTRUCTION_002 タスク3)。ワークフローは
+`main`(コード)をルートに、`data` ブランチを `./data` へ別途チェックアウトする。
+`src/common.py` のパス定数(`SCORES_PATH` 等)は `REPO_ROOT / "data" / ...` を
+指すため、Pythonコード側の変更は一切ない。
+
+- `main`: コード一式。`data/` は `.gitignore` 対象(dataブランチのネストした
+  作業ツリーであり、mainの履歴には含めない)
+- `data`: orphanブランチ。ルート直下に `scores.jsonl` / `prices.parquet` /
+  `reports/` を置く。追記専用の監査証跡は、この単一ブランチの線形履歴で担保する
+  (月次ブランチ等には分割しない)
+
+ローカルで評価(`evaluate.py`)を回す場合、`data` ブランチの内容を `./data` に
+用意する必要がある。git worktree を使うのが簡単:
+
+```bash
+git worktree add data data
+```
+
+(既に `data/` ディレクトリがある場合は先に退避・削除してから実行する)
 
 ## テスト
 
 制約A(ルックアヘッド禁止)・制約B(学習データ汚染対策)のガードは
-`tests/test_guards.py` で検証する。実装変更時は必ず全て通ることを確認すること
-(SPEC §10 の実装順序指示)。
+`tests/test_guards.py` で、価格取得ガード(場中除外等)は `tests/test_fetch_prices.py`
+で検証する。実装変更時は必ず全て通ることを確認すること(SPEC §10 の実装順序指示)。
 
 ```bash
 pytest tests/ -v
@@ -86,7 +107,7 @@ pytest tests/ -v
 「予測精度を上げる方向」ではなく「計測の汚染を防ぐ方向」に倒すこと。
 
 - 売買執行・自動発注・過去データのバックテストは実装しない(スコープ外, §8)
-- `data/scores.jsonl` は追記専用。既存レコードの更新・削除は行わない
+- `scores.jsonl`(`data` ブランチ)は追記専用。既存レコードの更新・削除は行わない
 - 採点プロンプトは `prompts/scorer_v1.md` から読み込み、SHA-256をレコードに保存する。
   改訂時は `scorer_v2.md` として新規追加し、旧スコアとは混合評価しない
 - 採点対象は取得時点から48時間以内に公開されたニュースのみ(学習データ汚染対策)
