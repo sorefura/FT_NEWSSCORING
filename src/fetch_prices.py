@@ -7,6 +7,7 @@ SPEC §0.3(記録は追記専用)に倣い、既に保存済みの (date, symbol
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from datetime import datetime, time
 from pathlib import Path
@@ -112,7 +113,7 @@ def main() -> None:
     argparse.ArgumentParser(description=__doc__).parse_args()
     config = load_config()
     summary = update_prices(config)
-    print(summary)
+    print(json.dumps(summary, ensure_ascii=False))
 
     # ブートストラップ失敗検知(INSTRUCTION_002 タスク2-b)。
     # added==0 自体は土日祝で正常なため異常条件にしない。ファイルが存在しない、
