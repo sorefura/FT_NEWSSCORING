@@ -28,6 +28,11 @@ from fetch_news import NewsItem, fetch_candidate_news
 
 PROMPT_PATH = REPO_ROOT / "prompts" / "scorer_v1.md"
 
+# SPEC §4.3 が定めるプロトコル定数(採点タスクの一部であり、運用で変えてよい
+# 設定値ではないため config.yaml には置かず、ここに固定値として持つ)。
+SCORING_TEMPERATURE = 0
+SCORING_REPEATS = 3
+
 
 class ScoringError(RuntimeError):
     """LLM応答が期待するJSONスキーマに従わない場合に送出する。"""
@@ -76,7 +81,9 @@ def _validate_response(data: dict[str, Any]) -> dict[str, Any]:
     return {"score": score, "relevance": relevance, "rationale": rationale}
 
 
-def call_model(client: anthropic.Anthropic, model: str, prompt: str, *, temperature: float = 0) -> dict[str, Any]:
+def call_model(
+    client: anthropic.Anthropic, model: str, prompt: str, *, temperature: float = SCORING_TEMPERATURE
+) -> dict[str, Any]:
     response = client.messages.create(
         model=model,
         max_tokens=200,
@@ -87,15 +94,22 @@ def call_model(client: anthropic.Anthropic, model: str, prompt: str, *, temperat
     return _validate_response(_extract_json(text))
 
 
-def three_pass_score(client: anthropic.Anthropic, model: str, prompt: str, *, temperature: float = 0) -> dict[str, Any]:
+def three_pass_score(
+    client: anthropic.Anthropic,
+    model: str,
+    prompt: str,
+    *,
+    temperature: float = SCORING_TEMPERATURE,
+    repeats: int = SCORING_REPEATS,
+) -> dict[str, Any]:
     """SPEC §4.3: 1ニュースにつき3回採点し、全scoreを記録。代表値は中央値。
 
     relevance/rationale は3回の応答で揺れうるため、score が中央値と一致した応答の
     ものを代表値として採用する(スキーマ上 relevance/rationale は1つしか持てないため)。
     """
-    responses = [call_model(client, model, prompt, temperature=temperature) for _ in range(3)]
+    responses = [call_model(client, model, prompt, temperature=temperature) for _ in range(repeats)]
     scores = [r["score"] for r in responses]
-    median_score = sorted(scores)[1]
+    median_score = sorted(scores)[len(scores) // 2]
     representative = next(r for r in responses if r["score"] == median_score)
     return {
         "scores": scores,
@@ -109,12 +123,15 @@ def score_pending_news(
     config: dict[str, Any],
     *,
     client: anthropic.Anthropic | None = None,
-    prompt_path: Path = PROMPT_PATH,
+    prompt_path: Path | None = None,
 ) -> dict[str, int]:
     """未採点ニュースを取得し、採点してscores.jsonlに追記する一連の処理。"""
     model = config["scoring"]["model"]
     check_allowed_model(model, config["scoring"]["allowed_models"])
 
+    # config.yaml の scoring.prompt_path を実際に読む(v2改訂時はconfig側だけ変えれば
+    # 追随する。プロンプト本文とprompt_versionの対応が食い違う事故を防ぐ)。
+    prompt_path = prompt_path or (REPO_ROOT / config["scoring"]["prompt_path"])
     prompt_template = load_prompt_template(prompt_path)
     prompt_sha256 = hash_prompt_file(prompt_path)
     prompt_version = config["scoring"]["prompt_version"]
@@ -124,7 +141,11 @@ def score_pending_news(
     existing_ids = {r["id"] for r in existing}
     existing_headlines = {r["headline"] for r in existing}
 
-    candidates = fetch_candidate_news(config, existing_ids=existing_ids, existing_headlines=existing_headlines)
+    fetch_result = fetch_candidate_news(config, existing_ids=existing_ids, existing_headlines=existing_headlines)
+    candidates = fetch_result.items
+    # 全フィードの生エントリ数が0の場合、フィードURL不通等の障害である可能性が高い。
+    # 「未採点0件」と区別してジョブを失敗させ、サイレント失敗にしない(G-1)。
+    feeds_dead = sum(fetch_result.raw_entry_counts.values()) == 0
 
     limit = config["news"]["daily_scoring_limit"]
     # SPEC §7: 上限超過分は繰り越さず切り捨て、欠測として記録する
@@ -166,6 +187,8 @@ def score_pending_news(
         "scored": scored,
         "failed": failed,
         "skipped_over_limit": skipped_over_limit,
+        "feeds_dead": feeds_dead,
+        "raw_entry_counts": fetch_result.raw_entry_counts,
     }
 
 
@@ -174,6 +197,11 @@ def main() -> None:
     config = load_config()
     summary = score_pending_news(config)
     print(json.dumps(summary, ensure_ascii=False))
+
+    if summary["feeds_dead"]:
+        # 全フィードが0エントリ = フィード設定/疎通の障害。欠測に気づけないサイレント失敗を防ぐ(G-1)。
+        print("[score.py] 全フィードが0エントリでした。フィードURLの疎通を確認してください。", file=sys.stderr)
+        sys.exit(1)
 
     if summary["candidates"] > 0 and summary["scored"] == 0:
         # 候補があったのに1件も採点できなかった場合はジョブを失敗させ、サイレント失敗にしない(SPEC G-1)。

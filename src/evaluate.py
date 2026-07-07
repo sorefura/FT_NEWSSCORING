@@ -198,9 +198,13 @@ def bucket_label(score: float) -> str:
     return "0"
 
 
-def bucket_table(daily_df: pd.DataFrame) -> pd.DataFrame:
+def bucket_table(daily_df: pd.DataFrame, *, min_n_for_judgement: int) -> pd.DataFrame:
+    """§6.1のバケット別集計。Nが少ないバケットは§6.3に従い「判定保留」を注記する。"""
     order = [b[2] for b in BUCKETS]
-    columns = ["bucket", "n", "mean_ret_1d", "std_ret_1d", "mean_ret_5d", "std_ret_5d", "mean_ret_20d", "std_ret_20d"]
+    columns = [
+        "bucket", "n", "judgement",
+        "mean_ret_1d", "std_ret_1d", "mean_ret_5d", "std_ret_5d", "mean_ret_20d", "std_ret_20d",
+    ]
     if daily_df.empty:
         return pd.DataFrame(columns=columns)
 
@@ -210,7 +214,12 @@ def bucket_table(daily_df: pd.DataFrame) -> pd.DataFrame:
     rows = []
     for label in order:
         sub = df[df["bucket"] == label]
-        row: dict[str, Any] = {"bucket": label, "n": len(sub)}
+        n = len(sub)
+        row: dict[str, Any] = {
+            "bucket": label,
+            "n": n,
+            "judgement": "判定保留(N不足)" if n < min_n_for_judgement else "-",
+        }
         for h in ("ret_1d", "ret_5d", "ret_20d"):
             vals = sub[h].dropna()
             row[f"mean_{h}"] = float(vals.mean()) if len(vals) else None
@@ -381,6 +390,7 @@ def _fmt(x: Any, digits: int = 4) -> str:
 def render_group_report(
     *, group_key: tuple[str, str], records: list[dict[str, Any]], daily_df: pd.DataFrame,
     calibration: dict[str, Any], hypothesis_results: list[dict[str, Any]], total_hypotheses: int,
+    min_n_for_judgement: int,
 ) -> str:
     model, prompt_version = group_key
     lines = [f"## モデル系列: model={model}, prompt_version={prompt_version}", ""]
@@ -447,7 +457,7 @@ def render_group_report(
     lines.append("")
 
     lines.append("### バケット別フォワードリターン(§6.1, 数表のみ)")
-    bt = bucket_table(daily_df)
+    bt = bucket_table(daily_df, min_n_for_judgement=min_n_for_judgement)
     if bt.empty:
         lines.append("(データなし)")
     else:
@@ -455,6 +465,7 @@ def render_group_report(
             [
                 r["bucket"],
                 str(r["n"]),
+                r["judgement"],
                 _fmt(r["mean_ret_1d"]),
                 _fmt(r["std_ret_1d"]),
                 _fmt(r["mean_ret_5d"]),
@@ -466,7 +477,7 @@ def render_group_report(
         ]
         lines.append(
             _md_table(
-                ["バケット", "N", "平均1日", "標準偏差1日", "平均5日", "標準偏差5日", "平均20日", "標準偏差20日"],
+                ["バケット", "N", "判定", "平均1日", "標準偏差1日", "平均5日", "標準偏差5日", "平均20日", "標準偏差20日"],
                 bt_rows,
             )
         )
@@ -494,6 +505,7 @@ def run_evaluation(config: dict[str, Any], *, month: str, seed: int = 0) -> str:
     total_hypotheses = count_registered_hypotheses()
     registration_date = parse_registration_date()
     n_resamples = config["evaluation"]["bootstrap_resamples"]
+    min_n_for_judgement = config["evaluation"]["min_n_for_judgement"]
     cost = config["costs"]["round_trip_cost_index"]
     calib_cfg = config["scoring"]["calibration"]
 
@@ -551,6 +563,7 @@ def run_evaluation(config: dict[str, Any], *, month: str, seed: int = 0) -> str:
                     calibration=calibration,
                     hypothesis_results=hypothesis_results,
                     total_hypotheses=total_hypotheses,
+                    min_n_for_judgement=min_n_for_judgement,
                 )
             )
 

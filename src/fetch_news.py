@@ -38,6 +38,14 @@ class NewsItem:
         }
 
 
+@dataclass(frozen=True)
+class FetchResult:
+    items: list[NewsItem]
+    # フィード名 -> フィルタ前の生エントリ数。全フィード合計が0ならフィードURLが
+    # 死んでいる可能性が高く、呼び出し側(score.py)がサイレント失敗にしないために使う。
+    raw_entry_counts: dict[str, int]
+
+
 def _parse_published(entry: Any) -> datetime | None:
     for key in ("published_parsed", "updated_parsed"):
         value = getattr(entry, key, None)
@@ -51,7 +59,7 @@ def fetch_candidate_news(
     *,
     existing_ids: set | None = None,
     existing_headlines: set | None = None,
-) -> list[NewsItem]:
+) -> FetchResult:
     """設定済みRSSフィードから、未採点かつ48時間以内に公開されたニュースを取得する。
 
     制約B(過去日付ニュースの採点禁止)の一次フィルタをここで行う。最終ガードは
@@ -67,9 +75,11 @@ def fetch_candidate_news(
     seen_ids: set = set()
     seen_headlines: set = set()
     items: list[NewsItem] = []
+    raw_entry_counts: dict[str, int] = {}
 
     for feed_cfg in config["news"]["feeds"]:
         parsed = feedparser.parse(feed_cfg["url"])
+        raw_entry_counts[feed_cfg["name"]] = len(parsed.entries)
         for entry in parsed.entries:
             url = getattr(entry, "link", None)
             headline = getattr(entry, "title", None)
@@ -101,7 +111,7 @@ def fetch_candidate_news(
             seen_ids.add(item_id)
             seen_headlines.add(headline)
 
-    return items
+    return FetchResult(items=items, raw_entry_counts=raw_entry_counts)
 
 
 def main() -> None:
@@ -112,8 +122,9 @@ def main() -> None:
     existing_ids = {r["id"] for r in existing}
     existing_headlines = {r["headline"] for r in existing}
 
-    items = fetch_candidate_news(config, existing_ids=existing_ids, existing_headlines=existing_headlines)
-    json.dump([item.to_public_dict() for item in items], sys.stdout, ensure_ascii=False, indent=2)
+    result = fetch_candidate_news(config, existing_ids=existing_ids, existing_headlines=existing_headlines)
+    print(f"raw_entry_counts={result.raw_entry_counts}", file=sys.stderr)
+    json.dump([item.to_public_dict() for item in result.items], sys.stdout, ensure_ascii=False, indent=2)
     sys.stdout.write("\n")
 
 

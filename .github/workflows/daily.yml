@@ -40,6 +40,9 @@ jobs:
 
       - run: pip install -r requirements.txt
 
+      - name: run tests (SPEC §10: ガードが壊れた状態で先に進まない)
+        run: python -m pytest tests/ -q
+
       - name: score.py (内部で fetch_news.py の取得処理を呼び出す)
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -70,6 +73,9 @@ jobs:
           python-version: "3.11"
 
       - run: pip install -r requirements.txt
+
+      - name: run tests (SPEC §10: ガードが壊れた状態で先に進まない)
+        run: python -m pytest tests/ -q
 
       - name: evaluate.py
         run: python src/evaluate.py

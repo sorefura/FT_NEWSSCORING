@@ -4,12 +4,13 @@
 pipeline_version: "1.0.0"
 
 news:
-  # SPEC §4.1: 日経・ロイター・Bloombergの公開RSSから市況/マクロカテゴリ
+  # SPEC §4.1: 市況/マクロカテゴリの公開RSS。日経・ロイターの当初想定URLは404で
+  # 廃止済みだったため、疎通確認済みの以下2フィードに差し替えている。
   feeds:
-    - name: reuters_jp
-      url: "https://jp.reuters.com/arc/outboundfeeds/newsroom/category/business/?outputType=xml"
-    - name: nikkei_markets
-      url: "https://www.nikkei.com/rss/index.rdf"
+    - name: nhk_keizai
+      url: "https://www3.nhk.or.jp/rss/news/cat5.xml"
+    - name: yahoo_keizai
+      url: "https://news.yahoo.co.jp/rss/topics/business.xml"
   # SPEC §7: 日次採点上限。超過分は繰り越さず欠測として記録
   daily_scoring_limit: 50
   # SPEC §4.2/§4.4 制約B: 採点対象は取得時点から48時間以内に公開されたニュースのみ
@@ -20,8 +21,8 @@ scoring:
   model: "claude-haiku-4-5-20251001"
   allowed_models:
     - "claude-haiku-4-5-20251001"
-  temperature: 0
-  repeats: 3
+  # temperature=0・3回採点はSPEC §4.3が定めるプロトコル定数であり、運用で変える
+  # 設定値ではないため src/score.py 側に固定値として持つ(config.yamlには置かない)。
   prompt_version: "v1"
   prompt_path: "prompts/scorer_v1.md"
   # SPEC §4.4: 再現性検査(校正)の不合格基準
@@ -44,5 +45,7 @@ costs:
 
 evaluation:
   bootstrap_resamples: 10000
-  # 判定保留とする最小サンプル数の目安(§6.3)
+  # §6.1のバケット別集計表で「判定保留」の注記を付ける最小サンプル数(§6.3)。
+  # H1〜H3の正式な棄却基準で使うN=60(SPEC §1.3)とは別物で、これは記述統計の
+  # バケット表にのみ適用される。
   min_n_for_judgement: 30
