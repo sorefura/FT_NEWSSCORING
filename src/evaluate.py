@@ -14,6 +14,7 @@ import random
 import re
 import statistics
 import sys
+from collections import Counter
 from dataclasses import dataclass
 from datetime import date, datetime, time
 from pathlib import Path
@@ -94,6 +95,30 @@ def calibration_report(
     ratios = {m: (sum(monthly[m]) / len(monthly[m])) for m in recent_months}
     failed = any(ratio > failure_rate_threshold for ratio in ratios.values())
     return {"monthly_ratios": ratios, "failed": failed}
+
+
+def score_distribution_monitor(
+    records: list[dict[str, Any]], daily_df: pd.DataFrame, *, month: str
+) -> dict[str, Any]:
+    """計測器の縮退(スコアが0に収束していないか)の月次監視(INSTRUCTION_003 タスク3)。
+
+    凍結された採点器・プロンプトには一切触れない、純粋な監視用の記述統計。
+    """
+    month_records = [
+        r for r in records if datetime.fromisoformat(r["scored_at"]).astimezone(JST).strftime("%Y-%m") == month
+    ]
+    distribution = dict(sorted(Counter(r["score_median"] for r in month_records).items()))
+    non_zero_rate = (
+        sum(1 for r in month_records if r["score_median"] != 0) / len(month_records) if month_records else float("nan")
+    )
+
+    if not daily_df.empty:
+        month_daily = daily_df[daily_df["date"].str.startswith(month)]
+    else:
+        month_daily = daily_df
+    composite_std = float(month_daily["composite_score"].std(ddof=1)) if len(month_daily) > 1 else float("nan")
+
+    return {"distribution": distribution, "non_zero_rate": non_zero_rate, "composite_std": composite_std}
 
 
 # --- フォワードリターンの結合(制約A) --------------------------------------------------
@@ -298,10 +323,12 @@ class HypothesisSpec:
     cost_key: str
 
 
+# INSTRUCTION_003: H1〜H3(閾値+2/−3)は合成スコア分布への不到達により H'系列へ置換。
+# 旧仕様は hypotheses.md 上で supersede 記録として保持され、Bonferroni 分母(6)に算入される。
 HYPOTHESIS_SPECS = [
-    HypothesisSpec("H1", "指数・翌日", "ret_1d", lambda df: df["composite_score"] >= 2, "round_trip_cost_index"),
-    HypothesisSpec("H2", "指数・持続(5日)", "ret_5d", lambda df: df["composite_score"] >= 2, "round_trip_cost_index"),
-    HypothesisSpec("H3", "逆張り検証(20日)", "ret_20d", lambda df: df["composite_score"] <= -3, "round_trip_cost_index"),
+    HypothesisSpec("H1'", "指数・翌日(±0.5修正)", "ret_1d", lambda df: df["composite_score"] >= 0.5, "round_trip_cost_index"),
+    HypothesisSpec("H2'", "指数・持続5日(±0.5修正)", "ret_5d", lambda df: df["composite_score"] >= 0.5, "round_trip_cost_index"),
+    HypothesisSpec("H3'", "逆張り20日(±0.5修正)", "ret_20d", lambda df: df["composite_score"] <= -0.5, "round_trip_cost_index"),
 ]
 
 
@@ -390,7 +417,7 @@ def _fmt(x: Any, digits: int = 4) -> str:
 def render_group_report(
     *, group_key: tuple[str, str], records: list[dict[str, Any]], daily_df: pd.DataFrame,
     calibration: dict[str, Any], hypothesis_results: list[dict[str, Any]], total_hypotheses: int,
-    min_n_for_judgement: int,
+    min_n_for_judgement: int, score_monitor: dict[str, Any],
 ) -> str:
     model, prompt_version = group_key
     lines = [f"## モデル系列: model={model}, prompt_version={prompt_version}", ""]
@@ -404,6 +431,11 @@ def render_group_report(
         lines.append(_md_table(["月", "範囲>2の比率"], cal_rows))
     else:
         lines.append("(データなし)")
+    lines.append("")
+    lines.append("計測器の縮退(0への収束)監視(当月分, INSTRUCTION_003):")
+    lines.append(f"- スコア分布(score_medianの度数): {score_monitor['distribution'] or '(データなし)'}")
+    lines.append(f"- 非ゼロ率: {_fmt(score_monitor['non_zero_rate'] * 100, 1)}%")
+    lines.append(f"- 日次合成スコアの標準偏差(当月分): {_fmt(score_monitor['composite_std'])}")
     lines.append("")
     lines.append(f"- 判定: {'**不合格 — 全仮説を評価不能として凍結**' if calibration['failed'] else '合格'}")
     lines.append("")
@@ -537,6 +569,7 @@ def run_evaluation(config: dict[str, Any], *, month: str, seed: int = 0) -> str:
                 failure_rate_threshold=calib_cfg["failure_rate_threshold"],
                 lookback_months=calib_cfg["lookback_months"],
             )
+            score_monitor = score_distribution_monitor(group_records, daily_df, month=month)
 
             latest_date = max(datetime.fromisoformat(r["scored_at"]).astimezone(JST).date() for r in group_records)
             months_elapsed = (latest_date - registration_date).days / 30.44
@@ -564,6 +597,7 @@ def run_evaluation(config: dict[str, Any], *, month: str, seed: int = 0) -> str:
                     hypothesis_results=hypothesis_results,
                     total_hypotheses=total_hypotheses,
                     min_n_for_judgement=min_n_for_judgement,
+                    score_monitor=score_monitor,
                 )
             )
 

@@ -220,3 +220,14 @@ def test_github_workflow_yaml_is_valid():
     for p in workflows:
         with open(p, encoding="utf-8") as f:
             yaml.safe_load(f)
+
+
+# --- 仮説登録簿の多重検定分母(INSTRUCTION_003) ------------------------------------------
+
+
+def test_bonferroni_denominator_is_six_after_amendment():
+    """修正登録後、旧3+新3=6が分母になる(INSTRUCTION_003)。書式崩れで分母が縮むと
+    補正が甘くなる(反保守)ため、テストで固定する。"""
+    import evaluate
+
+    assert evaluate.count_registered_hypotheses() == 6
