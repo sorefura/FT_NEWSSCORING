@@ -16,13 +16,17 @@ from typing import Any
 import anthropic
 
 from common import (
+    FEED_HEALTH_PATH,
     REPO_ROOT,
     ScoreRecord,
     append_score_record,
+    append_feed_health_observation,
     check_allowed_model,
     hash_prompt_file,
     load_config,
+    feed_zero_streaks,
     read_all_records,
+    read_feed_health_observations,
 )
 from fetch_news import NewsItem, fetch_candidate_news
 
@@ -87,7 +91,9 @@ def call_model(
     response = client.messages.create(
         model=model,
         max_tokens=200,
-        temperature=temperature,
+        # Anthropic SDK v1 では sampling 引数がシグネチャから削除された。対象の旧モデルで
+        # SPEC固定値 temperature=0 を維持するには extra_body 経由で送る(INSTRUCTION_004)。
+        extra_body={"temperature": temperature},
         messages=[{"role": "user", "content": prompt}],
     )
     text = "".join(block.text for block in response.content if getattr(block, "type", None) == "text")
@@ -124,7 +130,8 @@ def score_pending_news(
     *,
     client: anthropic.Anthropic | None = None,
     prompt_path: Path | None = None,
-) -> dict[str, int]:
+    feed_health_path: Path = FEED_HEALTH_PATH,
+) -> dict[str, Any]:
     """未採点ニュースを取得し、採点してscores.jsonlに追記する一連の処理。"""
     model = config["scoring"]["model"]
     check_allowed_model(model, config["scoring"]["allowed_models"])
@@ -143,9 +150,18 @@ def score_pending_news(
 
     fetch_result = fetch_candidate_news(config, existing_ids=existing_ids, existing_headlines=existing_headlines)
     candidates = fetch_result.items
-    # 全フィードの生エントリ数が0の場合、フィードURL不通等の障害である可能性が高い。
-    # 「未採点0件」と区別してジョブを失敗させ、サイレント失敗にしない(G-1)。
-    feeds_dead = sum(fetch_result.raw_entry_counts.values()) == 0
+    feed_urls = {feed["name"]: feed["url"] for feed in config["news"]["feeds"]}
+    append_feed_health_observation(
+        fetch_result.raw_entry_counts,
+        feed_urls,
+        pipeline_version,
+        path=feed_health_path,
+    )
+    observations = read_feed_health_observations(feed_health_path)
+    zero_streaks = feed_zero_streaks(observations, list(feed_urls))
+    zero_limit = config["news"]["feed_health"]["consecutive_zero_limit"]
+    unhealthy_feeds = {name: streak for name, streak in zero_streaks.items() if streak >= zero_limit}
+    all_feeds_empty = sum(fetch_result.raw_entry_counts.values()) == 0
 
     limit = config["news"]["daily_scoring_limit"]
     # SPEC §7: 上限超過分は繰り越さず切り捨て、欠測として記録する
@@ -175,6 +191,7 @@ def score_pending_news(
                 prompt_sha256=prompt_sha256,
                 prompt_version=prompt_version,
                 pipeline_version=pipeline_version,
+                feed_set=config["news"]["feed_set"],
             )
             append_score_record(record)
             scored += 1
@@ -187,7 +204,9 @@ def score_pending_news(
         "scored": scored,
         "failed": failed,
         "skipped_over_limit": skipped_over_limit,
-        "feeds_dead": feeds_dead,
+        "all_feeds_empty": all_feeds_empty,
+        "feed_zero_streaks": zero_streaks,
+        "unhealthy_feeds": unhealthy_feeds,
         "raw_entry_counts": fetch_result.raw_entry_counts,
     }
 
@@ -198,9 +217,17 @@ def main() -> None:
     summary = score_pending_news(config)
     print(json.dumps(summary, ensure_ascii=False))
 
-    if summary["feeds_dead"]:
+    if summary["all_feeds_empty"]:
         # 全フィードが0エントリ = フィード設定/疎通の障害。欠測に気づけないサイレント失敗を防ぐ(G-1)。
         print("[score.py] 全フィードが0エントリでした。フィードURLの疎通を確認してください。", file=sys.stderr)
+        sys.exit(1)
+
+    if summary["unhealthy_feeds"]:
+        print(
+            "[score.py] フィード単位の連続0件ガードが発火しました: "
+            f"{summary['unhealthy_feeds']}",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     if summary["candidates"] > 0 and summary["scored"] == 0:

@@ -1,7 +1,7 @@
 """フォワードリターン結合・仮説評価レポート生成(SPEC.md §6)。
 
 - 評価対象は hypotheses.md 登録済みの H1〜H3 のみ(§6.4)。
-- model / prompt_version が異なるスコアは決して混ぜない(制約B, B-4)。
+- model / prompt_version / feed_set が異なるスコアは決して混ぜない(制約B, B-4, INSTRUCTION_004)。
 - レコード単位で「採点時刻 < リターン計測開始時刻」を検証し、違反は除外+警告する(制約A, A-3)。
 - コスト控除前の数字は参考値としてのみ表示し、結論(棄却判定)には使わない(§6.2, D-4)。
 """
@@ -31,6 +31,7 @@ from common import (
     check_lookahead,
     load_config,
     read_all_records,
+    resolve_feed_set,
 )
 
 HYPOTHESES_PATH = REPO_ROOT / "hypotheses.md"
@@ -415,12 +416,15 @@ def _fmt(x: Any, digits: int = 4) -> str:
 
 
 def render_group_report(
-    *, group_key: tuple[str, str], records: list[dict[str, Any]], daily_df: pd.DataFrame,
+    *, group_key: tuple[str, str, str], records: list[dict[str, Any]], daily_df: pd.DataFrame,
     calibration: dict[str, Any], hypothesis_results: list[dict[str, Any]], total_hypotheses: int,
     min_n_for_judgement: int, score_monitor: dict[str, Any],
 ) -> str:
-    model, prompt_version = group_key
-    lines = [f"## モデル系列: model={model}, prompt_version={prompt_version}", ""]
+    model, prompt_version, feed_set = group_key
+    lines = [
+        f"## 評価系列: model={model}, prompt_version={prompt_version}, feed_set={feed_set}",
+        "",
+    ]
     lines.append(f"- 蓄積件数(採点イベント数): {len(records)}")
     lines.append(f"- 日次合成スコア件数: {len(daily_df)}")
     lines.append("")
@@ -541,10 +545,11 @@ def run_evaluation(config: dict[str, Any], *, month: str, seed: int = 0) -> str:
     cost = config["costs"]["round_trip_cost_index"]
     calib_cfg = config["scoring"]["calibration"]
 
-    # 制約B(B-4): model / prompt_version が異なるスコアは決して混ぜない。系列ごとに分離して評価する。
-    groups: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    # INSTRUCTION_004 案A: model / prompt_version に加え feed_set も系列キーとし、
+    # 旧NHK+Yahoo、Yahoo単独、復旧後NHK+Yahooを決して混ぜない。
+    groups: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
     for r in records:
-        groups.setdefault((r["model"], r["prompt_version"]), []).append(r)
+        groups.setdefault((r["model"], r["prompt_version"], resolve_feed_set(r)), []).append(r)
 
     report_lines = [
         f"# フォワードテスト評価レポート {month}",
@@ -553,7 +558,8 @@ def run_evaluation(config: dict[str, Any], *, month: str, seed: int = 0) -> str:
         f"- 事前登録仮説の総数: {total_hypotheses}(hypotheses.md, 登録日 {registration_date.isoformat()})",
         f"- 対象銘柄/指数: {symbol}",
         "",
-        "以下、model / prompt_version の系列ごとに分離して評価する(異なる系列のスコアは混合しない, SPEC制約B)。",
+        "以下、model / prompt_version / feed_set の系列ごとに分離して評価する"
+        "(異なる系列のスコアは混合しない, SPEC制約B・INSTRUCTION_004)。",
         "",
     ]
 

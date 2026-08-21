@@ -1,16 +1,22 @@
 # config.yaml — RSSフィード、対象ティッカー、コスト前提
 # SPEC.md §3, §5, §6.2, §7 参照
 
-pipeline_version: "1.0.0"
+pipeline_version: "1.1.0"
 
 news:
   # SPEC §4.1: 市況/マクロカテゴリの公開RSS。日経・ロイターの当初想定URLは404で
   # 廃止済みだったため、疎通確認済みの以下2フィードに差し替えている。
   feeds:
     - name: nhk_keizai
-      url: "https://www3.nhk.or.jp/rss/news/cat5.xml"
+      url: "https://news.web.nhk/n-data/conf/na/rss/cat5.xml"
     - name: yahoo_keizai
       url: "https://news.yahoo.co.jp/rss/topics/business.xml"
+  # INSTRUCTION_004: フィード構成が異なる期間を評価時に混ぜないため、
+  # この構成で採点した全レコードに同じ系列IDを保存する。
+  feed_set: "nhk_news_web+yahoo"
+  feed_health:
+    # 各フィードの生エントリ数がこの回数連続で0なら、他フィードが正常でも異常とする。
+    consecutive_zero_limit: 3
   # SPEC §7: 日次採点上限。超過分は繰り越さず欠測として記録
   daily_scoring_limit: 50
   # SPEC §4.2/§4.4 制約B: 採点対象は取得時点から48時間以内に公開されたニュースのみ

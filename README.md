@@ -67,7 +67,7 @@ python src/fetch_news.py     # (単体デバッグ用)未採点ニュース候�
 `.github/workflows/daily.yml` が以下を自動実行する(SPEC §3, §10-4)。
 
 - 毎営業日 JST 07:00 / 16:30: `score.py` → `fetch_prices.py` を実行し、結果を
-  `data` ブランチの `scores.jsonl` / `prices.parquet` に追記コミットする
+  `data` ブランチの `scores.jsonl` / `prices.parquet` / `feed_health.jsonl` にコミットする
 - 毎月1日: `evaluate.py` を実行し、`data` ブランチの `reports/YYYY-MM.md` をコミットする
 - `workflow_dispatch` から `collect` / `evaluate` を手動実行することも可能
 
@@ -111,6 +111,8 @@ pytest tests/ -v
 - 採点プロンプトは `prompts/scorer_v1.md` から読み込み、SHA-256をレコードに保存する。
   改訂時は `scorer_v2.md` として新規追加し、旧スコアとは混合評価しない
 - 採点対象は取得時点から48時間以内に公開されたニュースのみ(学習データ汚染対策)
+- フィードごとの生エントリ数を追記記録し、3回連続0件なら他フィードが正常でも異常終了する
+- `model / prompt_version / feed_set` が異なる採点結果は別系列として評価する
 - 記事本文はいかなるファイルにも保存しない(見出し・URL・スコアのみ保存)
 
 ## リポジトリ構成

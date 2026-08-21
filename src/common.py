@@ -21,6 +21,7 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parent.parent
 CONFIG_PATH = REPO_ROOT / "config.yaml"
 SCORES_PATH = REPO_ROOT / "data" / "scores.jsonl"
+FEED_HEALTH_PATH = REPO_ROOT / "data" / "feed_health.jsonl"
 PRICES_PATH = REPO_ROOT / "data" / "prices.parquet"
 REPORTS_DIR = REPO_ROOT / "data" / "reports"
 
@@ -83,6 +84,7 @@ class ScoreRecord:
     prompt_sha256: str
     prompt_version: str
     pipeline_version: str
+    feed_set: str
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -175,6 +177,8 @@ def validate_record(record: ScoreRecord) -> None:
         raise GuardViolation(f"relevance out of range {{0,1,2}}: {record.relevance}")
     if len(record.rationale) > 40:
         raise GuardViolation(f"rationale exceeds 40 characters ({len(record.rationale)}): {record.rationale!r}")
+    if not record.feed_set.strip():
+        raise GuardViolation("feed_set must not be empty")
 
 
 def append_score_record(record: ScoreRecord, path: Path = SCORES_PATH) -> None:
@@ -201,3 +205,79 @@ def read_all_records(path: Path = SCORES_PATH) -> list:
             if line:
                 records.append(json.loads(line))
     return records
+
+
+def append_feed_health_observation(
+    raw_entry_counts: dict[str, int],
+    feed_urls: dict[str, str],
+    pipeline_version: str,
+    *,
+    path: Path = FEED_HEALTH_PATH,
+    checked_at: datetime | None = None,
+) -> dict[str, Any]:
+    """フィード単位の生エントリ数を append-only の監査ログへ追記する。
+
+    scores.jsonl と同様、過去の観測は更新せず、各収集実行につき1行を末尾へ追加する。
+    """
+    checked_at = checked_at or datetime.now(timezone.utc)
+    if checked_at.tzinfo is None:
+        raise GuardViolation("feed health checked_at must be timezone-aware")
+    if any(not isinstance(count, int) or count < 0 for count in raw_entry_counts.values()):
+        raise GuardViolation(f"feed entry counts must be non-negative integers: {raw_entry_counts}")
+    if set(raw_entry_counts) != set(feed_urls):
+        raise GuardViolation("feed health counts and URL names must match")
+
+    observation = {
+        "checked_at": checked_at.isoformat(),
+        "raw_entry_counts": raw_entry_counts,
+        "feed_urls": feed_urls,
+        "pipeline_version": pipeline_version,
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(json.dumps(observation, ensure_ascii=False) + "\n")
+    return observation
+
+
+def read_feed_health_observations(path: Path = FEED_HEALTH_PATH) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+    observations = []
+    with open(path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                observations.append(json.loads(line))
+    return observations
+
+
+def feed_zero_streaks(
+    observations: list[dict[str, Any]], feed_names: list[str]
+) -> dict[str, int]:
+    """各フィードについて、末尾から連続する生エントリ0件の観測回数を返す。"""
+    streaks: dict[str, int] = {}
+    for feed_name in feed_names:
+        streak = 0
+        for observation in reversed(observations):
+            counts = observation.get("raw_entry_counts", {})
+            if feed_name not in counts or counts[feed_name] != 0:
+                break
+            streak += 1
+        streaks[feed_name] = streak
+    return streaks
+
+
+def resolve_feed_set(record: dict[str, Any]) -> str:
+    """INSTRUCTION_004 案A: 既存レコードを更新せず、欠落した系列IDを補完する。
+
+    2026-08-10までは旧NHK+Yahoo、2026-08-11以降の既存レコードはYahoo単独。
+    差し替え後のレコードには score.py が明示的な feed_set を保存するため、この
+    日付補完は移行前の append-only レコードだけに適用される。
+    """
+    explicit = record.get("feed_set")
+    if isinstance(explicit, str) and explicit.strip():
+        return explicit
+    scored_at = _parse_iso("scored_at", record["scored_at"]).astimezone(JST)
+    if scored_at.date() <= datetime(2026, 8, 10, tzinfo=JST).date():
+        return "nhk+yahoo"
+    return "yahoo"

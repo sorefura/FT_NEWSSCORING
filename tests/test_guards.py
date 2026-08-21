@@ -31,6 +31,7 @@ def make_record(**overrides) -> ScoreRecord:
         prompt_sha256="deadbeef",
         prompt_version="v1",
         pipeline_version="1.0.0",
+        feed_set="nhk+yahoo",
     )
     defaults.update(overrides)
     return ScoreRecord(**defaults)
